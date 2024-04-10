@@ -1,7 +1,8 @@
 const bcrypt = require("bcrypt");
 const { Router } = require("express");
 const _ = require("lodash");
-const { User, validate } = require("../models");
+const { User } = require("../models");
+const Joi = require("joi");
 const { authMiddleWare } = require("../middleware");
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
@@ -42,6 +43,29 @@ router.post("/", async (req, res) => {
     .send(_.pick(user, ["_id", "name", "email"]));
 });
 
+router.get("/", authMiddleWare, async (req, res) => {
+  try {
+    // Extract user IDs from request query parameters
+    const userIds = JSON.parse(req.query.userIds);
+
+    // Query database to find users with these IDs
+    const users = await User.find({ _id: { $in: userIds } });
+
+    // Format user data as required
+    const formattedUsers = users.map((user) => ({
+      _id: user._id,
+      name: user.name,
+    }));
+
+    // Send response with formatted user data
+    res.json(formattedUsers);
+  } catch (error) {
+    // Handle errors
+    console.error(error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
 router.get("/me", authMiddleWare, async (req, res) => {
   const user = await User.findById(req.user._id).select("-password");
   res.send(user);
@@ -57,5 +81,15 @@ router.get("/:email", authMiddleWare, async (req, res) => {
     id: user._id,
   });
 });
+
+const validate = (req) => {
+  const schema = {
+    email: Joi.string().min(5).max(255).required().email(),
+    password: Joi.string().min(5).max(1024).required(),
+    name: Joi.string().min(1).max(50).required(),
+  };
+
+  return Joi.object(schema).validate(req);
+};
 
 module.exports = router;

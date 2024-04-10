@@ -32,10 +32,13 @@ const expenseSchema = new mongoose.Schema({
     required: true,
     default: [],
   },
-  settledMembers: {
-    type: Array,
-    default: [],
-  },
+  settledMembers: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: [],
+    },
+  ],
   isSettled: {
     type: Boolean,
     default: false,

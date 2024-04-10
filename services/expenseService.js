@@ -5,13 +5,15 @@ const calculateSplit = (paidBy, members, amount) => {
       return {
         memberId: member._id,
         name: member.name,
-        balance: Number(amount - splittedAmount).toFixed(2),
+        balance: parseFloat(Number(amount - splittedAmount).toFixed(2)),
+        isPaid: true,
       };
     } else {
       return {
         memberId: member._id,
         name: member.name,
-        balance: `-${Number(splittedAmount).toFixed(2)}`,
+        balance: parseFloat((-1 * Number(splittedAmount)).toFixed(2)),
+        isPaid: false,
       };
     }
   });

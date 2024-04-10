@@ -10,211 +10,204 @@ const router = Router();
 
 // Add New Expense in Group
 router.post("/", authMiddleWare, async (req, res) => {
-  const { groupId, paidBy, description, amount } = req.body;
-  const group = await Group.findById(groupId);
-  if (!group) {
-    res.status(404).send("Group not found");
+  try {
+    const { groupId, paidBy, description, amount } = req.body;
+    const group = await Group.findById(groupId);
+    if (!group) {
+      return res.status(404).send("Group not found");
+    }
+
+    // Check if the group has any members
+    if (group.members.length < 2) {
+      return res
+        .status(400)
+        .send("Cannot add expense to a group with no members");
+    }
+
+    const members = await User.find(
+      { _id: { $in: group.members } },
+      { name: 1, _id: 1 }
+    ).lean();
+
+    // Calculate split and create expense object
+    const membersBalance = calculateSplit(paidBy, members, amount);
+    const expense = new Expense({
+      description,
+      amount,
+      date: Date.now(),
+      group: groupId,
+      paidBy,
+      membersBalance,
+      settledMembers: [],
+    });
+
+    await expense.save();
+    res.send(expense);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send("Internal Server Error");
   }
-
-  const members = await User.find(
-    { _id: { $in: group.members } },
-    { name: 1, _id: 1 }
-  ).lean();
-
-  const membersBalance = calculateSplit(paidBy, members, amount);
-
-  const expense = new Expense({
-    description,
-    amount,
-    date: Date.now(),
-    group: groupId,
-    paidBy,
-    membersBalance,
-    settledMembers: [],
-  });
-
-  await expense.save();
-  res.send(expense);
 });
 
 // Get Active and Settled Expenses of Group Member Individual
+// * Working code!
+// router.get(
+//   "/group/:groupId/member/:memberId",
+//   authMiddleWare,
+//   async (req, res) => {
+//     const groupId = req.params.groupId;
+//     const memberId = req.params.memberId;
+//     const expenses = await Expense.find({
+//       group: groupId,
+//     }).populate("paidBy", {
+//       name: 1,
+//       _id: 1,
+//     });
+
+//     const activeExpenses = expenses.filter((expense) => {
+//       return (
+//         expense.settledMembers.indexOf(memberId) === -1 && !expense.isSettled
+//       );
+//     });
+
+//     const settledExpenses = expenses.filter((expense) => {
+//       return expense.settledMembers.indexOf(memberId) > -1 || expense.isSettled;
+//     });
+
+//     res.send({
+//       activeExpenses,
+//       settledExpenses,
+//     });
+//   }
+// );
+
+// ? Testing
 router.get(
   "/group/:groupId/member/:memberId",
   authMiddleWare,
   async (req, res) => {
     const groupId = req.params.groupId;
     const memberId = req.params.memberId;
-    const expenses = await Expense.find({
-      group: groupId,
-    }).populate("paidBy", {
-      name: 1,
-      _id: 1,
-    });
 
-    const activeExpenses = expenses.filter((expense) => {
-      return (
-        expense.settledMembers.indexOf(memberId) === -1 && !expense.isSettled
+    try {
+      const expenses = await Expense.find({ group: groupId })
+        .populate({
+          path: "settledMembers",
+          select: "name",
+        })
+        .populate({
+          path: "paidBy",
+          select: "name",
+        });
+
+      const activeExpenses = expenses.filter((expense) => {
+        return (
+          expense.settledMembers.findIndex(
+            (settledMember) => settledMember._id.toString() === memberId
+          ) === -1 && !expense.isSettled
+        );
+      });
+
+      const settledExpenses = expenses.filter((expense) => {
+        return (
+          expense.settledMembers.findIndex(
+            (settledMember) => settledMember._id.toString() === memberId
+          ) > -1 || expense.isSettled
+        );
+      });
+
+      // Add the user who paid the bill to the response if not already included
+      settledExpenses.forEach((expense) => {
+        if (
+          !expense.settledMembers.some(
+            (member) => member._id.toString() === expense.paidBy._id.toString()
+          )
+        ) {
+          expense.settledMembers.push({
+            _id: expense.paidBy._id,
+            name: expense.paidBy.name,
+          });
+        }
+      });
+
+      // Calculate how much the authenticated user owes overall in the group
+      const totalOwedToGroup = expenses.reduce((total, expense) => {
+        expense.membersBalance.forEach((member) => {
+          if (member.memberId.toString() === memberId && !member.isPaid) {
+            total += Number(member.balance);
+          }
+        });
+        return total;
+      }, 0);
+
+      // Calculate how much the authenticated user owes to each individual member of the group
+      const owedToMap = new Map();
+
+      expenses.forEach((expense) => {
+        if (!expense.isSettled && expense.paidBy._id.toString() !== memberId) {
+          expense.membersBalance.forEach((member) => {
+            if (member.memberId.toString() === memberId && !member.isPaid) {
+              const memberId = expense.paidBy._id.toString();
+              const amount = Number(member.balance);
+              const name = expense.paidBy.name;
+
+              if (owedToMap.has(memberId)) {
+                // If member already exists in the map, update the owed amount
+                const existingAmount = owedToMap.get(memberId);
+                owedToMap.set(memberId, {
+                  name,
+                  amount: existingAmount.amount + amount,
+                });
+              } else {
+                // If member doesn't exist in the map, add a new entry
+                owedToMap.set(memberId, {
+                  name,
+                  amount,
+                });
+              }
+            }
+          });
+        }
+      });
+
+      // Convert the Map to an array of objects
+      const owedToIndividuals = Array.from(
+        owedToMap,
+        ([memberId, amount, name]) => ({
+          memberId,
+          amount,
+          name,
+        })
       );
-    });
 
-    const settledExpenses = expenses.filter((expense) => {
-      return expense.settledMembers.indexOf(memberId) > -1 || expense.isSettled;
-    });
+      // Calculate how much the authenticated user owes to each individual member of the group
+      //   const owedToIndividuals = {};
+      //   expenses.forEach((expense) => {
+      //     if (!expense.isSettled && expense.paidBy._id.toString() !== memberId) {
+      //       expense.membersBalance.forEach((member) => {
+      //         if (member.memberId.toString() === memberId && !member.isPaid) {
+      //           const owedTo = expense.paidBy.name;
+      //           if (!owedToIndividuals[owedTo]) {
+      //             owedToIndividuals[owedTo] = 0;
+      //           }
+      //           owedToIndividuals[owedTo] += Number(member.balance);
+      //         }
+      //       });
+      //     }
+      //   });
 
-    res.send({
-      activeExpenses,
-      settledExpenses,
-    });
+      res.send({
+        activeExpenses,
+        settledExpenses,
+        totalOwedToGroup,
+        owedToIndividuals,
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).send("Internal Server Error");
+    }
   }
 );
-
-// active settlements calculations
-// router.get(
-//   "/group/:groupId/member/:memberId",
-//   authMiddleWare,
-//   async (req, res) => {
-//     try {
-//       const groupId = req.params.groupId;
-//       const memberId = req.params.memberId;
-
-//       // Find all expenses for the group
-//       const expenses = await Expense.find({ group: groupId }).populate(
-//         "paidBy"
-//       );
-
-//       // Initialize arrays to store active and settled expenses
-//       const activeExpenses = [];
-//       const settledExpenses = [];
-
-//       // Iterate over each expense
-//       expenses.forEach((expense) => {
-//         const { paidBy, membersBalance, settledMembers, isSettled } =
-//           expense.toObject();
-
-//         const expenseDetails = {
-//           _id: expense._id,
-//           description: expense.description,
-//           amount: expense.amount,
-//           date: expense.date,
-//           group: expense.group,
-//           paidBy: {
-//             _id: paidBy._id,
-//             name: paidBy.name,
-//           },
-//           isSettled,
-//         };
-
-//         // Calculate settlements for active expenses
-//         if (!isSettled) {
-//           const settlements = membersBalance.map((member) => {
-//             const { memberId, name, balance } = member;
-
-//             // Calculate owed amount
-//             const amountOwed = memberId.toString() === memberId ? balance : 0;
-
-//             // Determine payment status
-//             const paymentStatus = settledMembers.includes(memberId)
-//               ? "Paid"
-//               : "Owes";
-
-//             return {
-//               memberId,
-//               name,
-//               amountOwed,
-//               paymentStatus,
-//             };
-//           });
-
-//           expenseDetails.settlements = settlements;
-//           activeExpenses.push(expenseDetails);
-//         } else {
-//           // For settled expenses, simply push to settledExpenses array
-//           settledExpenses.push(expenseDetails);
-//         }
-//       });
-
-//       res.send({
-//         activeExpenses,
-//         settledExpenses,
-//       });
-//     } catch (error) {
-//       console.error(error);
-//       res.status(500).send("Internal Server Error");
-//     }
-//   }
-// );
-
-// Get Active and Settled Expenses of Group Member Individual
-// router.get(
-//   "/group/:groupId/member/:memberId",
-//   authMiddleWare,
-//   async (req, res) => {
-//     try {
-//       const groupId = req.params.groupId;
-//       const memberId = req.params.memberId;
-
-//       // Find all expenses for the group
-//       const expenses = await Expense.find({ group: groupId }).populate(
-//         "paidBy"
-//       );
-
-//       // Filter settled expenses (settled or paid by the member)
-//       const settledExpenses = expenses.filter((expense) => {
-//         return (
-//           expense.settledMembers.indexOf(memberId) > -1 || expense.isSettled
-//         );
-//       });
-
-//       // Construct response for each settled expense
-//       const settledExpensesWithDetails = settledExpenses.map((expense) => {
-//         const { paidBy, membersBalance, settledMembers } = expense.toObject();
-
-//         // Calculate how much each member owes or is owed
-//         const settlements = membersBalance.map((member) => {
-//           const { memberId, name, balance } = member;
-
-//           // Calculate owed amount
-//           const amountOwed = memberId.toString() === memberId ? 0 : balance;
-
-//           // Determine payment status
-//           const paymentStatus =
-//             settledMembers.includes(memberId) ||
-//             paidBy._id.toString() === memberId
-//               ? "Paid"
-//               : "Owes";
-
-//           return {
-//             memberId,
-//             name,
-//             amountOwed,
-//             paymentStatus,
-//           };
-//         });
-
-//         return {
-//           _id: expense._id,
-//           description: expense.description,
-//           amount: expense.amount,
-//           date: expense.date,
-//           group: expense.group,
-//           paidBy: {
-//             _id: paidBy._id,
-//             name: paidBy.name,
-//           },
-//           settlements,
-//           isSettled: expense.isSettled,
-//         };
-//       });
-
-//       res.send({
-//         settledExpenses: settledExpensesWithDetails,
-//       });
-//     } catch (error) {
-//       console.error(error);
-//       res.status(500).send("Internal Server Error");
-//     }
-//   }
-// );
 
 // Settle Expense of Group Member Individual
 router.post("/:expenseId/settle/:memberId", async (req, res) => {
@@ -222,14 +215,22 @@ router.post("/:expenseId/settle/:memberId", async (req, res) => {
   const memberId = req.params.memberId;
   const expense = await Expense.findById(expenseId);
   if (!expense) {
-    res.status(404).send("Expense may be already settled or deleted");
+    return res.status(404).send("Expense may be already settled or deleted");
   }
   const index = expense.settledMembers.indexOf(memberId);
   if (index > -1) {
     expense.settledMembers.splice(index, 1);
   } else {
     expense.settledMembers.push(memberId);
+    // Update isPaid flag of that member in membersBalance array
+    const memberIndex = expense.membersBalance.findIndex(
+      (member) => member.memberId.toString() === memberId
+    );
+    if (memberIndex !== -1) {
+      expense.membersBalance[memberIndex].isPaid = true;
+    }
   }
+  // Check if all members except paidBy are settled
   if (
     expense.settledMembers.length ===
     expense.membersBalance.filter(
@@ -238,6 +239,8 @@ router.post("/:expenseId/settle/:memberId", async (req, res) => {
   ) {
     expense.isSettled = true;
   }
+  // Mark the document as modified
+  expense.markModified("membersBalance");
   await expense.save();
   res.send(expense);
 });
@@ -253,6 +256,13 @@ router.post("/:expenseId/revert/:memberId", async (req, res) => {
   const index = expense.settledMembers.indexOf(memberId);
   if (index > -1) {
     expense.settledMembers.splice(index, 1);
+  } else {
+    // set isPaid flag of that member in membersBalance array
+    expense.membersBalance.forEach((member) => {
+      if (member.memberId.toString() === memberId) {
+        member.isPaid = false;
+      }
+    });
   }
 
   if (
@@ -265,24 +275,6 @@ router.post("/:expenseId/revert/:memberId", async (req, res) => {
   }
   await expense.save();
   res.send(expense);
-});
-
-// Get Settlement Details for each Transaction
-router.get("/:expenseId/settlement", authMiddleWare, async (req, res) => {
-  try {
-    const expenseId = req.params.expenseId;
-    const expense = await Expense.findById(expenseId);
-    if (!expense) {
-      return res.status(404).send("Expense not found");
-    }
-
-    const settlements = calculateSettlement(expense);
-
-    res.send({ settlements });
-  } catch (error) {
-    console.error(error);
-    res.status(500).send("Internal Server Error");
-  }
 });
 
 module.exports = router;
