@@ -38,111 +38,111 @@ router.post("/", authMiddleWare, async (req, res) => {
 });
 
 // Get Active and Settled Expenses of Group Member Individual
-// router.get(
-//   "/group/:groupId/member/:memberId",
-//   authMiddleWare,
-//   async (req, res) => {
-//     const groupId = req.params.groupId;
-//     const memberId = req.params.memberId;
-//     const expenses = await Expense.find({
-//       group: groupId,
-//     }).populate("paidBy", {
-//       name: 1,
-//       _id: 1,
-//     });
-
-//     const activeExpenses = expenses.filter((expense) => {
-//       return (
-//         expense.settledMembers.indexOf(memberId) === -1 && !expense.isSettled
-//       );
-//     });
-
-//     const settledExpenses = expenses.filter((expense) => {
-//       return expense.settledMembers.indexOf(memberId) > -1 || expense.isSettled;
-//     });
-
-//     res.send({
-//       activeExpenses,
-//       settledExpenses,
-//     });
-//   }
-// );
-
-// active settlements calculations
 router.get(
   "/group/:groupId/member/:memberId",
   authMiddleWare,
   async (req, res) => {
-    try {
-      const groupId = req.params.groupId;
-      const memberId = req.params.memberId;
+    const groupId = req.params.groupId;
+    const memberId = req.params.memberId;
+    const expenses = await Expense.find({
+      group: groupId,
+    }).populate("paidBy", {
+      name: 1,
+      _id: 1,
+    });
 
-      // Find all expenses for the group
-      const expenses = await Expense.find({ group: groupId }).populate(
-        "paidBy"
+    const activeExpenses = expenses.filter((expense) => {
+      return (
+        expense.settledMembers.indexOf(memberId) === -1 && !expense.isSettled
       );
+    });
 
-      // Initialize arrays to store active and settled expenses
-      const activeExpenses = [];
-      const settledExpenses = [];
+    const settledExpenses = expenses.filter((expense) => {
+      return expense.settledMembers.indexOf(memberId) > -1 || expense.isSettled;
+    });
 
-      // Iterate over each expense
-      expenses.forEach((expense) => {
-        const { paidBy, membersBalance, settledMembers, isSettled } =
-          expense.toObject();
-
-        const expenseDetails = {
-          _id: expense._id,
-          description: expense.description,
-          amount: expense.amount,
-          date: expense.date,
-          group: expense.group,
-          paidBy: {
-            _id: paidBy._id,
-            name: paidBy.name,
-          },
-          isSettled,
-        };
-
-        // Calculate settlements for active expenses
-        if (!isSettled) {
-          const settlements = membersBalance.map((member) => {
-            const { memberId, name, balance } = member;
-
-            // Calculate owed amount
-            const amountOwed = memberId.toString() === memberId ? balance : 0;
-
-            // Determine payment status
-            const paymentStatus = settledMembers.includes(memberId)
-              ? "Paid"
-              : "Owes";
-
-            return {
-              memberId,
-              name,
-              amountOwed,
-              paymentStatus,
-            };
-          });
-
-          expenseDetails.settlements = settlements;
-          activeExpenses.push(expenseDetails);
-        } else {
-          // For settled expenses, simply push to settledExpenses array
-          settledExpenses.push(expenseDetails);
-        }
-      });
-
-      res.send({
-        activeExpenses,
-        settledExpenses,
-      });
-    } catch (error) {
-      console.error(error);
-      res.status(500).send("Internal Server Error");
-    }
+    res.send({
+      activeExpenses,
+      settledExpenses,
+    });
   }
 );
+
+// active settlements calculations
+// router.get(
+//   "/group/:groupId/member/:memberId",
+//   authMiddleWare,
+//   async (req, res) => {
+//     try {
+//       const groupId = req.params.groupId;
+//       const memberId = req.params.memberId;
+
+//       // Find all expenses for the group
+//       const expenses = await Expense.find({ group: groupId }).populate(
+//         "paidBy"
+//       );
+
+//       // Initialize arrays to store active and settled expenses
+//       const activeExpenses = [];
+//       const settledExpenses = [];
+
+//       // Iterate over each expense
+//       expenses.forEach((expense) => {
+//         const { paidBy, membersBalance, settledMembers, isSettled } =
+//           expense.toObject();
+
+//         const expenseDetails = {
+//           _id: expense._id,
+//           description: expense.description,
+//           amount: expense.amount,
+//           date: expense.date,
+//           group: expense.group,
+//           paidBy: {
+//             _id: paidBy._id,
+//             name: paidBy.name,
+//           },
+//           isSettled,
+//         };
+
+//         // Calculate settlements for active expenses
+//         if (!isSettled) {
+//           const settlements = membersBalance.map((member) => {
+//             const { memberId, name, balance } = member;
+
+//             // Calculate owed amount
+//             const amountOwed = memberId.toString() === memberId ? balance : 0;
+
+//             // Determine payment status
+//             const paymentStatus = settledMembers.includes(memberId)
+//               ? "Paid"
+//               : "Owes";
+
+//             return {
+//               memberId,
+//               name,
+//               amountOwed,
+//               paymentStatus,
+//             };
+//           });
+
+//           expenseDetails.settlements = settlements;
+//           activeExpenses.push(expenseDetails);
+//         } else {
+//           // For settled expenses, simply push to settledExpenses array
+//           settledExpenses.push(expenseDetails);
+//         }
+//       });
+
+//       res.send({
+//         activeExpenses,
+//         settledExpenses,
+//       });
+//     } catch (error) {
+//       console.error(error);
+//       res.status(500).send("Internal Server Error");
+//     }
+//   }
+// );
 
 // Get Active and Settled Expenses of Group Member Individual
 // router.get(
