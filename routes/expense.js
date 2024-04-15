@@ -140,46 +140,165 @@ router.get(
         return total;
       }, 0);
 
+      //   fetch user details who are in groupId
+      const group = await Group.findById(groupId)
+        .populate("members", { name: 1, _id: 1, settle: 1 })
+        .lean();
+
+      const users = group.members.map((member) => {
+        return {
+          _id: member._id.toString(),
+          name: member.name,
+          group_id: groupId,
+          settle: member.settle,
+        };
+      });
+
+      console.log("users:: ", users);
       // Calculate how much the authenticated user owes to each individual member of the group
-      const owedToMap = new Map();
-
       expenses.forEach((expense) => {
-        if (!expense.isSettled && expense.paidBy._id.toString() !== memberId) {
-          expense.membersBalance.forEach((member) => {
-            if (member.memberId.toString() === memberId && !member.isPaid) {
-              const memberId = expense.paidBy._id.toString();
-              const amount = Number(member.balance);
-              const name = expense.paidBy.name;
+        expense.membersBalance.forEach((expenseMember) => {
+          console.log("expense.settledMembers:: ", expense.settledMembers);
+          console.log("expenseMember.memberId:: ", expenseMember.memberId);
+          if (!expense.settledMembers.includes(expenseMember.memberId)) {
+            console.log("member is not settled!");
+            console.log("expenseMember.balance:: ", expenseMember.balance);
+            if (expenseMember.balance > 0) {
+              console.log("balance > 0: ", expenseMember.balance);
+              // add amount to user setttle .given
+              const userIndex = users.findIndex(
+                (user) =>
+                  user._id.toString() === expenseMember.memberId.toString()
+              );
+              console.log("userIndex:: ", userIndex);
+              const user = users[userIndex];
+              console.log("user:: ", user);
+              const userSettleIndex = user.settle.findIndex(
+                (settle) =>
+                  settle.group_id.toString() === expense.group.toString()
+              );
 
-              if (owedToMap.has(memberId)) {
-                // If member already exists in the map, update the owed amount
-                const existingAmount = owedToMap.get(memberId);
-                owedToMap.set(memberId, {
-                  name,
-                  amount: existingAmount.amount + amount,
+              if (userSettleIndex < 0) {
+                console.log("here: userSettleIndex < 0");
+                // add group_id, given and taken to user settle
+                user.settle.push({
+                  group_id: expense.group.toString(),
+                  given: expenseMember.balance,
+                  taken: 0,
+                  finalSettle: expenseMember.balance,
                 });
               } else {
-                // If member doesn't exist in the map, add a new entry
-                owedToMap.set(memberId, {
-                  name,
-                  amount,
-                });
+                console.log("userSettleIndex:: ", userSettleIndex);
+                console.log("user.settle:: ", user.settle);
+                const userSettle = user.settle[userSettleIndex];
+                console.log("userSettle::: ", userSettle);
+                userSettle.given += expenseMember.balance;
+                userSettle.finalSettle = userSettle.given + userSettle.taken;
               }
             }
+
+            if (expenseMember.balance < 0) {
+              // add amount to user settle .taken
+              const userIndex = users.findIndex(
+                (user) =>
+                  user._id.toString() === expenseMember.memberId.toString()
+              );
+              console.log("users < 0::: ", users);
+              console.log("userIndex < 0::: ", userIndex);
+              const user = users[userIndex];
+              console.log("user < 0::: ", user);
+              const userSettleIndex = user.settle.findIndex(
+                (settle) =>
+                  settle.group_id.toString() === expense.group.toString()
+              );
+
+              if (userSettleIndex < 0) {
+                console.log("here: userSettleIndex < 0");
+                // add group_id, given and taken to user settle
+                user.settle.push({
+                  group_id: expense.group.toString(),
+                  given: 0,
+                  taken: expenseMember.balance,
+                  finalSettle: expenseMember.balance,
+                });
+              } else {
+                console.log("here: userSettleIndex < 0 else part");
+                console.log("userSettleIndex < 0::: ", userSettleIndex);
+                const userSettle = user.settle[userSettleIndex];
+                console.log("userSettle < 0::: ", userSettle);
+                userSettle.taken += expenseMember.balance;
+                userSettle.finalSettle = userSettle.given + userSettle.taken;
+              }
+            }
+          }
+        });
+      });
+
+      let settledTrxs = [];
+      users.map((user) => {
+        user.settle.map((groupSettle) => {
+          settledTrxs.push({
+            name: user.name,
+            amount: groupSettle.finalSettle,
+            user_id: user._id,
           });
+        });
+      });
+
+      const sortedSettledTrxs = settledTrxs.sort((a, b) => {
+        if (a.amount < 0 && b.amount < 0) {
+          return a.amount - b.amount; // both values are negative, sort in ascending order
+        } else if (a.amount >= 0 && b.amount >= 0) {
+          return b.amount - a.amount; // both values are positive, sort in descending order
+        } else {
+          return a.amount < 0 ? -1 : 1; // one value is negative and the other is positive, negative value should come first
         }
       });
 
-      // Convert the Map to an array of objects
-      const owedToIndividuals = Array.from(
-        owedToMap,
-        ([memberId, amount, name]) => ({
-          memberId,
-          amount,
-          name,
-        })
-      );
+      console.log("sortedSettledTrxs:: ", sortedSettledTrxs);
 
+      // * working calculations to fetch individual user owes to other members
+      //   // Calculate how much the authenticated user owes to each individual member of the group
+      //   const owedToMap = new Map();
+
+      //   expenses.forEach((expense) => {
+      //     if (!expense.isSettled && expense.paidBy._id.toString() !== memberId) {
+      //       expense.membersBalance.forEach((member) => {
+      //         if (member.memberId.toString() === memberId && !member.isPaid) {
+      //           const memberId = expense.paidBy._id.toString();
+      //           const amount = Number(member.balance);
+      //           const name = expense.paidBy.name;
+
+      //           if (owedToMap.has(memberId)) {
+      //             // If member already exists in the map, update the owed amount
+      //             const existingAmount = owedToMap.get(memberId);
+      //             owedToMap.set(memberId, {
+      //               name,
+      //               amount: existingAmount.amount + amount,
+      //             });
+      //           } else {
+      //             // If member doesn't exist in the map, add a new entry
+      //             owedToMap.set(memberId, {
+      //               name,
+      //               amount,
+      //             });
+      //           }
+      //         }
+      //       });
+      //     }
+      //   });
+
+      //   // Convert the Map to an array of objects
+      //   const owedToIndividuals = Array.from(
+      //     owedToMap,
+      //     ([memberId, amount, name]) => ({
+      //       memberId,
+      //       amount,
+      //       name,
+      //     })
+      //   );
+
+      //   ? Don't know weather working or not?
       // Calculate how much the authenticated user owes to each individual member of the group
       //   const owedToIndividuals = {};
       //   expenses.forEach((expense) => {
@@ -200,7 +319,7 @@ router.get(
         activeExpenses,
         settledExpenses,
         totalOwedToGroup,
-        owedToIndividuals,
+        owedToIndividuals: sortedSettledTrxs,
       });
     } catch (error) {
       console.error(error);
