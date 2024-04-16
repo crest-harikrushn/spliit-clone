@@ -1,6 +1,8 @@
+const mongoose = require("mongoose");
 const { Router } = require("express");
 const { authMiddleWare } = require("../middleware");
 const { Expense, Group, User } = require("../models");
+const minimizeTransactions = require("../helpers/minimizeTrx");
 const {
   calculateSettlement,
   calculateSplit,
@@ -12,25 +14,30 @@ const router = Router();
 router.post("/", authMiddleWare, async (req, res) => {
   try {
     const { groupId, paidBy, description, amount } = req.body;
+
+    // Fetch the group and check if it exists
     const group = await Group.findById(groupId);
     if (!group) {
       return res.status(404).send("Group not found");
     }
 
-    // Check if the group has any members
+    // Check if the group has at least 2 members
     if (group.members.length < 2) {
       return res
         .status(400)
         .send("Cannot add expense to a group with no members");
     }
 
+    // Fetch the members from the group
     const members = await User.find(
       { _id: { $in: group.members } },
-      { name: 1, _id: 1 }
-    ).lean();
+      { name: 1, _id: 1, settle: 1 }
+    );
 
-    // Calculate split and create expense object
+    // Calculate the split of the expense
     const membersBalance = calculateSplit(paidBy, members, amount);
+
+    // Create a new expense
     const expense = new Expense({
       description,
       amount,
@@ -41,10 +48,62 @@ router.post("/", authMiddleWare, async (req, res) => {
       settledMembers: [],
     });
 
+    // Save the new expense to the database
     await expense.save();
+
+    // Array to store update operations for bulk write
+    const bulkUpdates = [];
+
+    // Iterate over each member to update settle information
+    for (const member of members) {
+      // Find the settle entry for the current group
+      let userSettle = member.settle.find(
+        (settle) => settle.group_id.toString() === groupId.toString()
+      );
+
+      // If not found, initialize a new settle entry for the group
+      if (!userSettle) {
+        userSettle = {
+          group_id: groupId.toString(),
+          given: 0,
+          taken: 0,
+        };
+        member.settle.push(userSettle);
+      }
+
+      // Iterate through balances to update settle information
+      for (const balance of membersBalance) {
+        if (balance.memberId.toString() === member._id.toString()) {
+          // Update the given and taken amounts
+          if (balance.balance > 0) {
+            userSettle.given += balance.balance;
+          } else {
+            userSettle.taken += balance.balance;
+          }
+
+          // Calculate final settle
+          userSettle.finalSettle = userSettle.given + userSettle.taken;
+        }
+      }
+
+      // Add update operation to bulkUpdates array
+      bulkUpdates.push({
+        updateOne: {
+          filter: { _id: member._id },
+          update: {
+            $set: { settle: member.settle },
+          },
+        },
+      });
+    }
+
+    // Perform bulk updates
+    await User.bulkWrite(bulkUpdates);
+
+    // Return the saved expense object as the response
     res.send(expense);
   } catch (error) {
-    console.error(error);
+    console.error("Internal Server Error:", error);
     res.status(500).send("Internal Server Error");
   }
 });
@@ -131,14 +190,14 @@ router.get(
       });
 
       // Calculate how much the authenticated user owes overall in the group
-      const totalOwedToGroup = expenses.reduce((total, expense) => {
-        expense.membersBalance.forEach((member) => {
-          if (member.memberId.toString() === memberId && !member.isPaid) {
-            total += Number(member.balance);
-          }
-        });
-        return total;
-      }, 0);
+      //   const totalOwedToGroup = expenses.reduce((total, expense) => {
+      //     expense.membersBalance.forEach((member) => {
+      //       if (member.memberId.toString() === memberId && !member.isPaid) {
+      //         total += Number(member.balance);
+      //       }
+      //     });
+      //     return total;
+      //   }, 0);
 
       //   fetch user details who are in groupId
       const group = await Group.findById(groupId)
@@ -146,6 +205,7 @@ router.get(
         .lean();
 
       const users = group.members.map((member) => {
+        console.log("member.settle:::", member.settle);
         return {
           _id: member._id.toString(),
           name: member.name,
@@ -154,97 +214,108 @@ router.get(
         };
       });
 
-      console.log("users:: ", users);
+      //   console.log("users:: ", users);
       // Calculate how much the authenticated user owes to each individual member of the group
       expenses.forEach((expense) => {
-        expense.membersBalance.forEach((expenseMember) => {
-          console.log("expense.settledMembers:: ", expense.settledMembers);
-          console.log("expenseMember.memberId:: ", expenseMember.memberId);
-          if (!expense.settledMembers.includes(expenseMember.memberId)) {
-            console.log("member is not settled!");
-            console.log("expenseMember.balance:: ", expenseMember.balance);
-            if (expenseMember.balance > 0) {
-              console.log("balance > 0: ", expenseMember.balance);
-              // add amount to user setttle .given
-              const userIndex = users.findIndex(
-                (user) =>
-                  user._id.toString() === expenseMember.memberId.toString()
-              );
-              console.log("userIndex:: ", userIndex);
-              const user = users[userIndex];
-              console.log("user:: ", user);
-              const userSettleIndex = user.settle.findIndex(
-                (settle) =>
-                  settle.group_id.toString() === expense.group.toString()
-              );
+        // check if expense is of given groupId then only process it
+        if (expense.group.toString() === groupId) {
+          expense.membersBalance.forEach((expenseMember) => {
+            //   console.log("expense.settledMembers:: ", expense.settledMembers);
+            //   console.log("expenseMember.memberId:: ", expenseMember.memberId);
+            if (!expense.settledMembers.includes(expenseMember.memberId)) {
+              // console.log("member is not settled!");
+              // console.log("expenseMember.balance:: ", expenseMember.balance);
+              if (expenseMember.balance > 0) {
+                //   console.log("balance > 0: ", expenseMember.balance);
+                // add amount to user setttle .given
+                const userIndex = users.findIndex(
+                  (user) =>
+                    user._id.toString() === expenseMember.memberId.toString()
+                );
+                //   console.log("userIndex:: ", userIndex);
+                const user = users[userIndex];
+                //   console.log("user:: ", user);
+                const userSettleIndex = user.settle.findIndex(
+                  (settle) =>
+                    settle.group_id.toString() === expense.group.toString()
+                );
 
-              if (userSettleIndex < 0) {
-                console.log("here: userSettleIndex < 0");
-                // add group_id, given and taken to user settle
-                user.settle.push({
-                  group_id: expense.group.toString(),
-                  given: expenseMember.balance,
-                  taken: 0,
-                  finalSettle: expenseMember.balance,
-                });
-              } else {
-                console.log("userSettleIndex:: ", userSettleIndex);
-                console.log("user.settle:: ", user.settle);
-                const userSettle = user.settle[userSettleIndex];
-                console.log("userSettle::: ", userSettle);
-                userSettle.given += expenseMember.balance;
-                userSettle.finalSettle = userSettle.given + userSettle.taken;
+                if (userSettleIndex < 0) {
+                  // console.log("here: userSettleIndex < 0");
+                  // add group_id, given and taken to user settle
+                  user.settle.push({
+                    group_id: expense.group.toString(),
+                    given: expenseMember.balance,
+                    taken: 0,
+                    finalSettle: expenseMember.balance,
+                  });
+                }
+                // else {
+                //   // console.log("userSettleIndex:: ", userSettleIndex);
+                //   // console.log("user.settle:: ", user.settle);
+                //   const userSettle = user.settle[userSettleIndex];
+                //   // console.log("userSettle::: ", userSettle);
+                //   userSettle.given += expenseMember.balance;
+                //   userSettle.finalSettle = userSettle.given + userSettle.taken;
+                // }
+              }
+
+              if (expenseMember.balance < 0) {
+                // add amount to user settle .taken
+                const userIndex = users.findIndex(
+                  (user) =>
+                    user._id.toString() === expenseMember.memberId.toString()
+                );
+                //   console.log("users < 0::: ", users);
+                //   console.log("userIndex < 0::: ", userIndex);
+                const user = users[userIndex];
+                //   console.log("user < 0::: ", user);
+                const userSettleIndex = user.settle.findIndex(
+                  (settle) =>
+                    settle.group_id.toString() === expense.group.toString()
+                );
+
+                if (userSettleIndex < 0) {
+                  // console.log("here: userSettleIndex < 0");
+                  // add group_id, given and taken to user settle
+                  user.settle.push({
+                    group_id: expense.group.toString(),
+                    given: 0,
+                    taken: expenseMember.balance,
+                    finalSettle: expenseMember.balance,
+                  });
+                }
+                // else {
+                //   // console.log("here: userSettleIndex < 0 else part");
+                //   // console.log("userSettleIndex < 0::: ", userSettleIndex);
+                //   const userSettle = user.settle[userSettleIndex];
+                //   // console.log("userSettle < 0::: ", userSettle);
+                //   userSettle.taken += expenseMember.balance;
+                //   userSettle.finalSettle = userSettle.given + userSettle.taken;
+                // }
               }
             }
-
-            if (expenseMember.balance < 0) {
-              // add amount to user settle .taken
-              const userIndex = users.findIndex(
-                (user) =>
-                  user._id.toString() === expenseMember.memberId.toString()
-              );
-              console.log("users < 0::: ", users);
-              console.log("userIndex < 0::: ", userIndex);
-              const user = users[userIndex];
-              console.log("user < 0::: ", user);
-              const userSettleIndex = user.settle.findIndex(
-                (settle) =>
-                  settle.group_id.toString() === expense.group.toString()
-              );
-
-              if (userSettleIndex < 0) {
-                console.log("here: userSettleIndex < 0");
-                // add group_id, given and taken to user settle
-                user.settle.push({
-                  group_id: expense.group.toString(),
-                  given: 0,
-                  taken: expenseMember.balance,
-                  finalSettle: expenseMember.balance,
-                });
-              } else {
-                console.log("here: userSettleIndex < 0 else part");
-                console.log("userSettleIndex < 0::: ", userSettleIndex);
-                const userSettle = user.settle[userSettleIndex];
-                console.log("userSettle < 0::: ", userSettle);
-                userSettle.taken += expenseMember.balance;
-                userSettle.finalSettle = userSettle.given + userSettle.taken;
-              }
-            }
-          }
-        });
+          });
+        }
       });
 
       let settledTrxs = [];
+      //   console.log("users:: ", users);
+      users.map((user) => console.log(user));
       users.map((user) => {
         user.settle.map((groupSettle) => {
-          settledTrxs.push({
-            name: user.name,
-            amount: groupSettle.finalSettle,
-            user_id: user._id,
-          });
+          console.log("groupSettle:: ", groupSettle);
+          // check if settle.groupId is given group id
+          if (groupSettle.group_id === groupId) {
+            settledTrxs.push({
+              name: user.name,
+              amount: groupSettle.finalSettle,
+              user_id: user._id,
+            });
+          }
         });
       });
-
+      console.log("settledTrxs:::: ", settledTrxs);
       const sortedSettledTrxs = settledTrxs.sort((a, b) => {
         if (a.amount < 0 && b.amount < 0) {
           return a.amount - b.amount; // both values are negative, sort in ascending order
@@ -257,69 +328,29 @@ router.get(
 
       console.log("sortedSettledTrxs:: ", sortedSettledTrxs);
 
-      // * working calculations to fetch individual user owes to other members
-      //   // Calculate how much the authenticated user owes to each individual member of the group
-      //   const owedToMap = new Map();
+      const minimizedTrxs = minimizeTransactions(sortedSettledTrxs);
 
-      //   expenses.forEach((expense) => {
-      //     if (!expense.isSettled && expense.paidBy._id.toString() !== memberId) {
-      //       expense.membersBalance.forEach((member) => {
-      //         if (member.memberId.toString() === memberId && !member.isPaid) {
-      //           const memberId = expense.paidBy._id.toString();
-      //           const amount = Number(member.balance);
-      //           const name = expense.paidBy.name;
-
-      //           if (owedToMap.has(memberId)) {
-      //             // If member already exists in the map, update the owed amount
-      //             const existingAmount = owedToMap.get(memberId);
-      //             owedToMap.set(memberId, {
-      //               name,
-      //               amount: existingAmount.amount + amount,
-      //             });
-      //           } else {
-      //             // If member doesn't exist in the map, add a new entry
-      //             owedToMap.set(memberId, {
-      //               name,
-      //               amount,
-      //             });
-      //           }
-      //         }
-      //       });
-      //     }
-      //   });
-
-      //   // Convert the Map to an array of objects
-      //   const owedToIndividuals = Array.from(
-      //     owedToMap,
-      //     ([memberId, amount, name]) => ({
-      //       memberId,
-      //       amount,
-      //       name,
-      //     })
-      //   );
-
-      //   ? Don't know weather working or not?
-      // Calculate how much the authenticated user owes to each individual member of the group
-      //   const owedToIndividuals = {};
-      //   expenses.forEach((expense) => {
-      //     if (!expense.isSettled && expense.paidBy._id.toString() !== memberId) {
-      //       expense.membersBalance.forEach((member) => {
-      //         if (member.memberId.toString() === memberId && !member.isPaid) {
-      //           const owedTo = expense.paidBy.name;
-      //           if (!owedToIndividuals[owedTo]) {
-      //             owedToIndividuals[owedTo] = 0;
-      //           }
-      //           owedToIndividuals[owedTo] += Number(member.balance);
-      //         }
-      //       });
-      //     }
-      //   });
+      //   fetch settle entry from users table for current user and group with witch request is fetched
+      const settleEntry = await User.findOne({
+        _id: new mongoose.Types.ObjectId(memberId),
+        "settle.group_id": groupId,
+      });
+      //   fetch only matching groupid object from settle of settleEntry
+      const settled = settleEntry.settle.find(
+        (settle) => settle.group_id === groupId
+      );
+      console.log("settled:: ", settled);
+      const totalOwedToGroup = settled.taken;
+      const totalLentToGroup = settled.given;
+      const totalToSettle = settled.finalSettle;
 
       res.send({
         activeExpenses,
         settledExpenses,
-        totalOwedToGroup,
-        owedToIndividuals: sortedSettledTrxs,
+        totalOwedToGroup: totalOwedToGroup ?? 0,
+        totalLentToGroup: totalLentToGroup ?? 0,
+        totalToSettle: totalToSettle ?? 0,
+        owedToIndividuals: minimizedTrxs,
       });
     } catch (error) {
       console.error(error);
@@ -361,7 +392,72 @@ router.post("/:expenseId/settle/:memberId", async (req, res) => {
   // Mark the document as modified
   expense.markModified("membersBalance");
   await expense.save();
-  res.send(expense);
+
+  //   update taken and finalSettle of memberId in settle array of that group in users collection
+  const user = await User.findOne({ _id: mongoose.Types.ObjectId(memberId) });
+  console.log("user:::: ", user);
+  if (!user) {
+    return res.status(404).send("User not found");
+  }
+  // find groupSettleIndex of that group in user.settle array
+  const groupSettleIndex = user.settle.findIndex(
+    (settle) => settle.group_id.toString() === expense.group.toString()
+  );
+  console.log("groupSettleIndex::: ", groupSettleIndex);
+  if (groupSettleIndex < 0) {
+    return res.status(404).send("Settle not found");
+  }
+  // update taken and finalSettle of memberId in settle array of that group in users collection
+  user.settle[groupSettleIndex].taken =
+    user.settle[groupSettleIndex].taken +
+      -1 *
+        expense.membersBalance.find(
+          (member) => member.memberId.toString() === memberId
+        ).balance || 0;
+  user.settle[groupSettleIndex].finalSettle =
+    user.settle[groupSettleIndex].given + user.settle[groupSettleIndex].taken;
+  console.log(
+    "user.settle[groupSettleIndex]::: ",
+    user.settle[groupSettleIndex]
+  );
+
+  //   mark settle as modified in order to successfully update it
+  user.markModified("settle");
+
+  //   update taken and finalSettle of paidBy user of that expense in settle array of that group in users collection
+  const paidByUser = await User.findOne({
+    _id: mongoose.Types.ObjectId(expense.paidBy),
+  });
+
+  if (!paidByUser) {
+    return res.status(404).send("User not found");
+  }
+
+  //   find paidByGroupSettleIndex of that group in paidByUser.settle array
+  const paidByGroupSettleIndex = paidByUser.settle.findIndex(
+    (settle) => settle.group_id.toString() === expense.group.toString()
+  );
+
+  if (paidByGroupSettleIndex < 0) {
+    return res.status(404).send("Settle not found");
+  }
+
+  //   update given and finalSettle of paidBy user of that expense in settle array of that group in users collection
+  paidByUser.settle[paidByGroupSettleIndex].given =
+    expense.amount - paidByUser.settle[paidByGroupSettleIndex].given;
+
+  paidByUser.settle[paidByGroupSettleIndex].finalSettle =
+    paidByUser.settle[paidByGroupSettleIndex].given +
+    paidByUser.settle[paidByGroupSettleIndex].taken;
+
+  //  mark settle as modified in order to successfully update it
+  paidByUser.markModified("settle");
+
+  //   save user and paidByUser to update their settle
+  await paidByUser.save();
+  await user.save();
+
+  return res.send(expense);
 });
 
 // revert settled expense
@@ -384,6 +480,7 @@ router.post("/:expenseId/revert/:memberId", async (req, res) => {
     });
   }
 
+  //   check if all members except paidBy are settled or not and update isSettled flag accordingly
   if (
     expense.settledMembers.length !==
     expense.membersBalance.filter(
@@ -393,6 +490,73 @@ router.post("/:expenseId/revert/:memberId", async (req, res) => {
     expense.isSettled = false;
   }
   await expense.save();
+
+  //   update taken and finalSettle of memberId in settle array of that group in users collection
+  const user = await User.findOne({ _id: mongoose.Types.ObjectId(memberId) });
+  if (!user) {
+    return res.status(404).send("User not found");
+  }
+
+  // find groupSettleIndex of that group in user.settle array
+
+  const groupSettleIndex = user.settle.findIndex(
+    (settle) => settle.group_id.toString() === expense.group.toString()
+  );
+
+  if (groupSettleIndex < 0) {
+    return res.status(404).send("Settle not found");
+  }
+
+  // update taken and finalSettle of memberId in settle array of that group in users collection
+  user.settle[groupSettleIndex].taken =
+    user.settle[groupSettleIndex].taken -
+      -1 *
+        expense.membersBalance.find(
+          (member) => member.memberId.toString() === memberId
+        ).balance || 0;
+
+  user.settle[groupSettleIndex].finalSettle =
+    user.settle[groupSettleIndex].given + user.settle[groupSettleIndex].taken;
+
+  // mark settle as modified in order to successfully update it
+  user.markModified("settle");
+
+  // update given and finalSettle of paidBy user of that expense in settle array of that group in users collection
+  const paidByUser = await User.findOne({
+    _id: mongoose.Types.ObjectId(expense.paidBy),
+  });
+
+  if (!paidByUser) {
+    return res.status(404).send("User not found");
+  }
+
+  // find paidByGroupSettleIndex of that group in paidByUser.settle array
+  const paidByGroupSettleIndex = paidByUser.settle.findIndex(
+    (settle) => settle.group_id.toString() === expense.group.toString()
+  );
+
+  if (paidByGroupSettleIndex < 0) {
+    return res.status(404).send("Settle not found");
+  }
+
+  // update given and finalSettle of paidBy user of that expense in settle array of that group in users collection
+  paidByUser.settle[paidByGroupSettleIndex].given =
+    paidByUser.settle[paidByGroupSettleIndex].given -
+      expense.membersBalance.find(
+        (member) => member.memberId.toString() === memberId
+      ).balance || 0;
+
+  paidByUser.settle[paidByGroupSettleIndex].finalSettle =
+    paidByUser.settle[paidByGroupSettleIndex].given +
+    paidByUser.settle[paidByGroupSettleIndex].taken;
+
+  // mark settle as modified in order to successfully update it
+  paidByUser.markModified("settle");
+
+  // save user and paidByUser to update their settle
+  await paidByUser.save();
+  await user.save();
+
   res.send(expense);
 });
 
