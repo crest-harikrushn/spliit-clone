@@ -1,61 +1,67 @@
 const mongoose = require("mongoose");
 
-const expenseSchema = new mongoose.Schema({
-  description: {
-    type: String,
-    required: true,
-    minlength: 1,
-    maxlength: 100,
-  },
-  amount: {
-    type: Number,
-    required: true,
-    min: 0,
-  },
-  date: {
-    type: Date,
-    required: true,
-    default: Date.now,
-  },
-  group: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "Group",
-    required: true,
-  },
-  paidBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true,
-  },
-  membersBalance: {
-    type: Array,
-    required: true,
-    default: [],
-  },
-  settledMembers: [
-    {
+const expenseSchema = new mongoose.Schema(
+  {
+    description: {
+      type: String,
+      required: true,
+      minlength: 1,
+      maxlength: 100,
+    },
+    amount: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    date: {
+      type: Date,
+      required: true,
+      default: Date.now,
+    },
+    group: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Group",
+      required: true,
+    },
+    paidBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
+      required: true,
+    },
+    membersBalance: {
+      type: Array,
+      required: true,
       default: [],
     },
-  ],
-  isSettled: {
-    type: Boolean,
-    default: false,
-  },
-  settlements: {
-    type: [
+    settledMembers: [
       {
-        memberId: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: "User",
-        },
-        amount: Number,
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        default: [],
       },
     ],
-    default: [],
+    isSettled: {
+      type: Boolean,
+      default: false,
+    },
+    settlements: {
+      type: [
+        {
+          memberId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "User",
+          },
+          amount: Number,
+        },
+      ],
+      default: [],
+    },
   },
-});
+  {
+    versionKey: false,
+    timestamps: true,
+  }
+);
 
 const validateExpense = (expense) => {
   const schema = {

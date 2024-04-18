@@ -3,6 +3,8 @@ const { authMiddleWare } = require("../middleware");
 const { Expense, Group, User } = require("../models");
 const mongoose = require("mongoose");
 const { updateMemberBalances } = require("../services/expenseService");
+const calculateSummary = require("../helpers/calculateGroupSummary");
+const moment = require("moment");
 
 const router = Router();
 
@@ -82,6 +84,7 @@ router.delete(
   }
 );
 
+// Add new member to group
 router.post("/:groupId/member/:memberId", authMiddleWare, async (req, res) => {
   const groupId = req.params.groupId;
   const memberId = req.params.memberId;
@@ -95,21 +98,21 @@ router.post("/:groupId/member/:memberId", authMiddleWare, async (req, res) => {
   }
   group.members.push(memberId);
 
-  const expenses = await Expense.find({ group: groupId });
+  //   const expenses = await Expense.find({ group: groupId });
 
-  const updatedMemberBalances = await updateMemberBalances(
-    expenses,
-    group.members
-  );
+  //   const updatedMemberBalances = await updateMemberBalances(
+  //     expenses,
+  //     group.members
+  //   );
 
-  await Promise.all(
-    updatedMemberBalances.map(async (memberBalances) => {
-      await Expense.updateOne(
-        { _id: memberBalances.expenseId },
-        { $set: { membersBalance: memberBalances.membersBalance } }
-      );
-    })
-  );
+  //   await Promise.all(
+  //     updatedMemberBalances.map(async (memberBalances) => {
+  //       await Expense.updateOne(
+  //         { _id: memberBalances.expenseId },
+  //         { $set: { membersBalance: memberBalances.membersBalance } }
+  //       );
+  //     })
+  //   );
 
   await group.save();
   return res.send(group);
@@ -128,6 +131,66 @@ router.delete("/:groupId", authMiddleWare, async (req, res) => {
   const result = await Group.deleteOne({ _id: groupId });
 
   return res.send("Group Deleted");
+});
+
+// API to fetch group summary
+router.get("/:groupId/summary", authMiddleWare, async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const userId = req.user._id; // Assume user ID is available in the request context (e.g. from authentication middleware)
+    const groupId = req.params.groupId;
+
+    // Define the time periods using moment.js
+    const currentMonthStart = moment().startOf("month").toDate();
+    const lastMonthStart = moment()
+      .subtract(1, "months")
+      .startOf("month")
+      .toDate();
+    const lastMonthEnd = moment().startOf("month").toDate();
+
+    try {
+      // Function to calculate group summary for a given time range
+
+      // Calculate summary for each time period
+      const currentMonthSummary = await calculateSummary(
+        groupId,
+        userId,
+        currentMonthStart,
+        new Date()
+      );
+      const lastMonthSummary = await calculateSummary(
+        groupId,
+        userId,
+        lastMonthStart,
+        lastMonthEnd
+      );
+      const allTimeSummary = await calculateSummary(
+        groupId,
+        userId,
+        new Date("1970-01-01"),
+        new Date()
+      );
+
+      // Prepare the response data
+      const groupSummary = {
+        currentMonth: currentMonthSummary,
+        lastMonth: lastMonthSummary,
+        allTime: allTimeSummary,
+      };
+
+      // Send the response
+      res.status(200).json({ summary: groupSummary, message: "success" });
+    } catch (error) {
+      console.error("Error fetching group summary:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
 });
 
 module.exports = router;

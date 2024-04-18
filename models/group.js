@@ -1,22 +1,28 @@
 const Joi = require("joi");
 const mongoose = require("mongoose");
 
-const groupSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: true,
-    minlength: 1,
-    maxlength: 50,
+const groupSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      minlength: 1,
+      maxlength: 50,
+    },
+    description: {
+      type: String,
+      maxlength: 512,
+    },
+    members: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: "User",
+    },
   },
-  description: {
-    type: String,
-    maxlength: 512,
-  },
-  members: {
-    type: [mongoose.Schema.Types.ObjectId],
-    ref: "User",
-  },
-});
+  {
+    versionKey: false,
+    timestamps: true,
+  }
+);
 
 const Group = mongoose.model("Group", groupSchema);
 

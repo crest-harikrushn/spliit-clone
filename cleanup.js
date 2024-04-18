@@ -35,4 +35,29 @@ const cleanup = async () => {
   }
 };
 
+const drop = async () => {
+  const client = new MongoClient(uri, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  });
+  try {
+    // Connect to the MongoDB server
+    await client.connect();
+    console.log("Connected to the database");
+
+    const db = await client.db("splitwise-prod");
+
+    // drop all collections
+    await db.dropDatabase();
+    console.log("Database Deleted:)");
+  } catch (error) {
+    console.error("Error during cleanup:", error);
+  } finally {
+    // Ensure the client connection is closed
+    await client.close();
+    console.log("Database connection closed");
+  }
+};
+
 cleanup();
+// drop();
