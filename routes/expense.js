@@ -14,7 +14,33 @@ const router = Router();
 // Add New Expense in Group
 router.post("/", authMiddleWare, async (req, res) => {
   try {
-    const { groupId, paidBy, description, amount } = req.body;
+    const {
+      groupId,
+      paidBy,
+      description,
+      amount,
+      date,
+      splitMode = "equal",
+      membersInExpense,
+      percentages = [],
+      customAmounts = [],
+    } = req.body;
+
+    // check if any missing data which is required to proceed further
+    if (!groupId || !paidBy || !description || !amount) {
+      return res.status(400).send("Missing required data");
+    }
+
+    // check if splitMode is valid and if splitMode is percentage then check if percentages are provided if not then return error also check if splitMode is custom then check if customAmounts are provided if not then return error
+    if (
+      !["equal", "custom", "percentage"].includes(splitMode) ||
+      (splitMode === "percentage" && !percentages.length) ||
+      (splitMode === "custom" && !customAmounts.length)
+    ) {
+      return res
+        .status(400)
+        .send("Invalid split mode or missing percentages or custom amounts");
+    }
 
     // Fetch the group and check if it exists
     const group = await Group.findById(groupId);
@@ -28,15 +54,48 @@ router.post("/", authMiddleWare, async (req, res) => {
         .status(400)
         .send("Cannot add expense to a group with no members");
     }
+    console.log(
+      "!Array.isArray(membersInExpense):: ",
+      !Array.isArray(membersInExpense)
+    );
+    console.log("membersInExpense::::::: ", membersInExpense);
+    console.log("!membersInExpense.length:: ", !membersInExpense.length);
+    console.log(
+      "membersInExpense.length > group.members.length:: ",
+      membersInExpense.length > group.members.length
+    );
+    console.log("membersInExpense.length < 2:: ", membersInExpense.length < 2);
+    // membersInExpense should be an array of member IDs and should not be empty and it's length should be less than or equal to the number of members in the group and also should not be less than 2
+    if (
+      !Array.isArray(membersInExpense) ||
+      !membersInExpense.length ||
+      membersInExpense.length > group.members.length ||
+      membersInExpense.length < 2
+    ) {
+      return res.status(400).send("Invalid members in expense");
+    }
 
     // Fetch the members from the group
     const members = await User.find(
-      { _id: { $in: group.members } },
+      {
+        _id: {
+          $in: membersInExpense.map(
+            (member) => new mongoose.Types.ObjectId(member)
+          ),
+        },
+      },
       { name: 1, _id: 1, settle: 1 }
     );
 
     // Calculate the split of the expense
-    const membersBalance = calculateSplit(paidBy, members, amount);
+    const membersBalance = calculateSplit(
+      paidBy,
+      members,
+      amount,
+      splitMode,
+      customAmounts,
+      percentages
+    );
 
     // Create a new expense
     const expense = new Expense({
@@ -46,6 +105,18 @@ router.post("/", authMiddleWare, async (req, res) => {
       group: groupId,
       paidBy,
       membersBalance,
+      splitMode,
+      percentageShares: percentages,
+      //   .map((percentage, index) => ({
+      //     memberId: members[index]._id,
+      //     percentage,
+      //   })),
+      customAmounts: customAmounts,
+      //   .map((customAmount, index) => ({
+      //     memberId: members[index]._id,
+      //     customAmount,
+      //   })),
+
       settledMembers: [],
     });
 
@@ -105,10 +176,14 @@ router.post("/", authMiddleWare, async (req, res) => {
     res.send(expense);
   } catch (error) {
     console.error("Internal Server Error:", error);
-    res.status(500).send("Internal Server Error");
+    res.status(500).send({
+      message: "Internal Server Error",
+      error: error.message,
+    });
   }
 });
 
+// Get Group Expenses
 // Get Active and Settled Expenses of Group Member Individual
 // * Working code!
 // router.get(
@@ -148,6 +223,15 @@ router.get(
   async (req, res) => {
     const groupId = req.params.groupId;
     const memberId = req.params.memberId;
+
+    // check if group exists or not?
+    const groupExists = await Group.exists({ _id: groupId });
+
+    if (!groupExists) {
+      return res.status(404).send({
+        message: "Group not found",
+      });
+    }
 
     try {
       const expenses = await Expense.find({

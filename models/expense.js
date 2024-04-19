@@ -1,3 +1,4 @@
+const { required } = require("joi");
 const mongoose = require("mongoose");
 
 const expenseSchema = new mongoose.Schema(
@@ -32,6 +33,31 @@ const expenseSchema = new mongoose.Schema(
       type: Array,
       required: true,
       default: [],
+    },
+    percentageShares: {
+      type: [
+        {
+          memberId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          percentage: Number,
+        },
+      ],
+      required: true,
+      default: [],
+    },
+    customAmounts: {
+      type: [
+        {
+          memberId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          amount: Number,
+        },
+      ],
+      required: true,
+      default: [],
+    },
+    splitMode: {
+      type: String,
+      enum: ["equal", "custom", "percentage"],
+      default: "equal",
     },
     settledMembers: [
       {

@@ -1,22 +1,110 @@
-const calculateSplit = (paidBy, members, amount) => {
-  const splittedAmount = +Number(amount / members.length).toFixed(2);
-  const membersBalance = members.map((member) => {
-    if (member._id.toString() === paidBy.toString()) {
-      return {
-        memberId: member._id,
-        name: member.name,
-        balance: parseFloat(Number(amount - splittedAmount).toFixed(2)),
-        isPaid: true,
-      };
-    } else {
-      return {
-        memberId: member._id,
-        name: member.name,
-        balance: parseFloat((-1 * Number(splittedAmount)).toFixed(2)),
-        isPaid: false,
-      };
+const calculateSplit = (
+  paidBy,
+  members,
+  amount,
+  splitMode,
+  customAmounts = [],
+  percentages = []
+) => {
+  const membersBalance = [];
+
+  // Validate lengths for custom and percentage split modes
+  if (splitMode === "custom") {
+    if (members.length !== customAmounts.length) {
+      throw new Error(
+        "The lengths of members and customAmounts must match for custom split mode"
+      );
     }
-  });
+  } else if (splitMode === "percentage") {
+    if (members.length !== percentages.length) {
+      throw new Error(
+        "The lengths of members and percentages must match for percentage split mode"
+      );
+    }
+  }
+
+  switch (splitMode) {
+    case "equal":
+      const equalSplit = +Number(amount / members.length).toFixed(2);
+      members.forEach((member) => {
+        const balance =
+          member._id.toString() === paidBy.toString()
+            ? amount - equalSplit
+            : -equalSplit;
+        membersBalance.push({
+          memberId: member._id,
+          name: member.name,
+          balance: parseFloat(balance.toFixed(2)),
+          isPaid: member._id.toString() === paidBy.toString(),
+        });
+      });
+      break;
+
+    case "custom":
+      // Calculate custom splits
+      members.forEach((member, index) => {
+        // Retrieve the custom amount for the current member
+        const customAmount = customAmounts.find(
+          (entry) => entry.memberId === member._id.toString()
+        );
+
+        // Calculate the balance for the current member
+        const balance = customAmount ? -customAmount.amount : 0;
+
+        // If the member is the one who paid, adjust their balance accordingly
+        const paidByMember = member._id.toString() === paidBy.toString();
+        const paidByAmount = paidByMember
+          ? amount - customAmount.amount
+          : balance;
+
+        membersBalance.push({
+          memberId: member._id,
+          name: member.name,
+          balance: parseFloat(paidByAmount.toFixed(2)),
+          isPaid: paidByMember,
+        });
+      });
+      break;
+
+    case "percentage":
+      // Validate that the sum of percentages is 100
+      const totalPercentage = percentages.reduce(
+        (sum, entry) => sum + entry.amount,
+        0
+      );
+      if (totalPercentage !== 100) {
+        throw new Error("The sum of the provided percentages must equal 100%");
+      }
+
+      // Percentage split logic
+      members.forEach((member) => {
+        // Find the percentage entry for the current member
+        const percentageEntry = percentages.find(
+          (entry) => entry.memberId === member._id.toString()
+        );
+
+        // Calculate the member's share of the total amount based on the provided percentage
+        const memberShare = (amount * percentageEntry.amount) / 100;
+
+        // Calculate the balance for the current member
+        const balance =
+          member._id.toString() === paidBy.toString()
+            ? amount - memberShare
+            : -memberShare;
+
+        membersBalance.push({
+          memberId: member._id,
+          name: member.name,
+          balance: parseFloat(balance.toFixed(2)),
+          isPaid: member._id.toString() === paidBy.toString(),
+        });
+      });
+      break;
+
+    default:
+      throw new Error("Invalid split mode");
+  }
+
   return membersBalance;
 };
 
