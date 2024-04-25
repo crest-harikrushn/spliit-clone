@@ -18,7 +18,10 @@ router.get("/:groupId", authMiddleWare, async (req, res) => {
   if (!group) {
     return res.status(404).send("Group not found");
   }
-  const totalExpenses = await Expense.countDocuments({ group: group._id });
+  const totalExpenses = await Expense.countDocuments({
+    group: new mongoose.Types.ObjectId(group._id),
+  });
+  console.log("totalExpenses:: ", totalExpenses);
   return res.send({ ...group, totalExpenses });
 });
 
@@ -35,16 +38,26 @@ router.post("/", authMiddleWare, async (req, res) => {
 
 router.get("/member/:memberId", authMiddleWare, async (req, res) => {
   const memberId = req.params.memberId;
-  let groups = await Group.find({ members: memberId }).lean();
-  groups = groups.map(async (group) => {
-    const totalExpenses = await Expense.countDocuments({ group: group._id });
-    return {
-      ...group,
-      totalExpenses,
-    };
-  });
-  groups = await Promise.all(groups);
-  return res.send(groups);
+
+  try {
+    // Find groups where the member is a member
+    let groups = await Group.find({ members: memberId }).lean();
+
+    // Calculate total expenses for each group asynchronously
+    await Promise.all(
+      groups.map(async (group) => {
+        group.totalExpenses = await Expense.countDocuments({
+          group: group._id,
+        });
+      })
+    );
+
+    // Send the response
+    return res.send(groups);
+  } catch (error) {
+    console.error("Error:", error);
+    return res.status(500).send("Internal Server Error");
+  }
 });
 
 router.delete(
